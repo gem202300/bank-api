@@ -2,11 +2,13 @@ package com.ivan.bankapi.controller;
 
 import com.ivan.bankapi.dto.AccountResponse;
 import com.ivan.bankapi.dto.CreateAccountRequest;
+import com.ivan.bankapi.dto.DepositRequest;
 import com.ivan.bankapi.service.AccountService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 @RestController
@@ -33,5 +35,10 @@ public class AccountController {
     @GetMapping("/{id}")
     public AccountResponse getById(@PathVariable Long id) {
         return accountService.findById(id);
+    }
+
+    @PostMapping("/{id}/deposit")
+    public AccountResponse deposit(@PathVariable Long id,@Valid @RequestBody DepositRequest request) {
+        return accountService.deposit(id, request);
     }
 }

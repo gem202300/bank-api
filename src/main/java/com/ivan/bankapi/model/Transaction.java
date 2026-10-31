@@ -42,6 +42,15 @@ public class Transaction {
 
     public Transaction() {
     }
+    public Transaction(TransactionType type, BigDecimal amount, Account account, Account relatedAccount, UUID transferGroupId, String description, BigDecimal balanceAfter) {
+        this.type = type;
+        this.amount = amount;
+        this.account = account;
+        this.relatedAccount = relatedAccount;
+        this.transferGroupId = transferGroupId;
+        this.description = description;
+        this.balanceAfter = balanceAfter;
+    }
 
     public Long getId() {
         return id;
