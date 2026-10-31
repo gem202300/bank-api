@@ -1,8 +1,7 @@
 package com.ivan.bankapi.service;
 
-import com.ivan.bankapi.dto.AccountResponse;
-import com.ivan.bankapi.dto.CreateAccountRequest;
-import com.ivan.bankapi.dto.DepositRequest;
+import com.ivan.bankapi.dto.*;
+import com.ivan.bankapi.exception.BusinessException;
 import com.ivan.bankapi.exception.ResourceNotFoundException;
 import com.ivan.bankapi.model.Account;
 import com.ivan.bankapi.model.Transaction;
@@ -24,9 +23,11 @@ public class AccountService {
 
     private final AccountRepository accountRepository;
     private final UserRepository userRepository;
-    private final TransactionRepository transactionRepository
-            ;
-    public AccountService(AccountRepository accountRepository, UserRepository userRepository, TransactionRepository transactionRepository) {
+    private final TransactionRepository transactionRepository;
+
+    public AccountService(AccountRepository accountRepository,
+                          UserRepository userRepository,
+                          TransactionRepository transactionRepository) {
         this.accountRepository = accountRepository;
         this.userRepository = userRepository;
         this.transactionRepository = transactionRepository;
@@ -38,38 +39,8 @@ public class AccountService {
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + request.getOwnerId()));
 
         String currency = request.getCurrency() != null ? request.getCurrency() : "PLN";
-        String accountNumber = generateAccountNumber();
-
-        Account account = new Account(accountNumber, owner, currency);
+        Account account = new Account(generateAccountNumber(), owner, currency);
         account = accountRepository.save(account);
-
-        return toResponse(account);
-    }
-
-    @Transactional
-    public AccountResponse deposit(Long accountId, DepositRequest request) {
-        Account account = accountRepository.findById(accountId)
-                .orElseThrow(() -> new ResourceNotFoundException("Account not found: " + accountId));
-
-        if (account.getStatus() != AccountStatus.ACTIVE) {
-            throw new IllegalStateException("Account is not active");
-        }
-
-        BigDecimal newBalance = account.getBalance().add(request.getAmount());
-        account.setBalance(newBalance);
-        accountRepository.save(account);
-
-        Transaction tx = new Transaction(
-                TransactionType.DEPOSIT,
-                request.getAmount(),
-                account,
-                null,
-                null,
-                request.getDescription(),
-                newBalance
-        );
-        transactionRepository.save(tx);
-
         return toResponse(account);
     }
 
@@ -82,9 +53,127 @@ public class AccountService {
 
     @Transactional(readOnly = true)
     public AccountResponse findById(Long id) {
-        Account account = accountRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException("Account not found: " + id));
+        return toResponse(getAccount(id));
+    }
+
+    @Transactional
+    public AccountResponse deposit(Long accountId, DepositRequest request) {
+        Account account = getAccount(accountId);
+        requireActive(account);
+
+        BigDecimal newBalance = account.getBalance().add(request.getAmount());
+        account.setBalance(newBalance);
+        accountRepository.save(account);
+
+        transactionRepository.save(new Transaction(
+                TransactionType.DEPOSIT,
+                request.getAmount(),
+                account,
+                null,
+                null,
+                request.getDescription(),
+                newBalance
+        ));
+
         return toResponse(account);
+    }
+
+    @Transactional
+    public AccountResponse withdraw(Long accountId, WithdrawRequest request) {
+        Account account = getAccount(accountId);
+        requireActive(account);
+
+        if (account.getBalance().compareTo(request.getAmount()) < 0) {
+            throw new BusinessException("Insufficient funds");
+        }
+
+        BigDecimal newBalance = account.getBalance().subtract(request.getAmount());
+        account.setBalance(newBalance);
+        accountRepository.save(account);
+
+        transactionRepository.save(new Transaction(
+                TransactionType.WITHDRAWAL,
+                request.getAmount(),
+                account,
+                null,
+                null,
+                request.getDescription(),
+                newBalance
+        ));
+
+        return toResponse(account);
+    }
+
+    @Transactional
+    public TransferResponse transfer(TransferRequest request) {
+        if (request.getFromAccountId().equals(request.getToAccountId())) {
+            throw new BusinessException("Cannot transfer to the same account");
+        }
+
+        Account from = getAccount(request.getFromAccountId());
+        Account to = getAccount(request.getToAccountId());
+
+        requireActive(from);
+        requireActive(to);
+
+        if (!from.getCurrency().equals(to.getCurrency())) {
+            throw new BusinessException("Currency mismatch");
+        }
+
+        if (from.getBalance().compareTo(request.getAmount()) < 0) {
+            throw new BusinessException("Insufficient funds");
+        }
+
+        BigDecimal amount = request.getAmount();
+        UUID transferGroupId = UUID.randomUUID();
+
+        BigDecimal fromNewBalance = from.getBalance().subtract(amount);
+        from.setBalance(fromNewBalance);
+        accountRepository.save(from);
+
+        BigDecimal toNewBalance = to.getBalance().add(amount);
+        to.setBalance(toNewBalance);
+        accountRepository.save(to);
+
+        transactionRepository.save(new Transaction(
+                TransactionType.TRANSFER_OUT,
+                amount,
+                from,
+                to,
+                transferGroupId,
+                request.getDescription(),
+                fromNewBalance
+        ));
+
+        transactionRepository.save(new Transaction(
+                TransactionType.TRANSFER_IN,
+                amount,
+                to,
+                from,
+                transferGroupId,
+                request.getDescription(),
+                toNewBalance
+        ));
+
+        return new TransferResponse(
+                transferGroupId,
+                from.getId(),
+                to.getId(),
+                amount,
+                fromNewBalance,
+                toNewBalance
+        );
+    }
+
+    private Account getAccount(Long id) {
+        return accountRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Account not found: " + id));
+    }
+
+    private void requireActive(Account account) {
+        if (account.getStatus() != AccountStatus.ACTIVE) {
+            throw new IllegalStateException("Account is not active: " + account.getId());
+        }
     }
 
     private String generateAccountNumber() {

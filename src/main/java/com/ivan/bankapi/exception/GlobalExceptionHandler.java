@@ -31,6 +31,10 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Map<String, Object>> handleOther(Exception ex) {
         return build(HttpStatus.INTERNAL_SERVER_ERROR, ex.getMessage());
     }
+    @ExceptionHandler(BusinessException.class)
+    public ResponseEntity<Map<String, Object>> handleBusiness(BusinessException ex) {
+        return build(HttpStatus.BAD_REQUEST, ex.getMessage());
+    }
 
     @ExceptionHandler(IllegalStateException.class)
     public ResponseEntity<Map<String, Object>> handleIllegalState(IllegalStateException ex) {
