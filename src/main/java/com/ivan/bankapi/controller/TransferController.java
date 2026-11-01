@@ -17,7 +17,18 @@ public class TransferController {
     }
 
     @PostMapping
-    public TransferResponse transfer(@Valid @RequestBody TransferRequest request) {
-        return accountService.transfer(request);
+    public TransferResponse transfer(
+            @Valid @RequestBody TransferRequest request,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestParam Long userId
+    ) {
+        return accountService.transfer(request, userId, idempotencyKey);
+    }
+
+    @GetMapping("/{transferGroupId}")
+    public java.util.List<com.ivan.bankapi.dto.TransactionResponse> getTransfer(
+            @PathVariable java.util.UUID transferGroupId
+    ) {
+        return accountService.getByTransferGroupId(transferGroupId);
     }
 }

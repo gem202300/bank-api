@@ -7,6 +7,9 @@ import org.springframework.stereotype.Repository;
 import java.util.Optional;
 
 @Repository
-public interface IdempotencyRecordRepository extends JpaRepository<IdempotencyRecord,Long> {
+public interface IdempotencyRecordRepository extends JpaRepository<IdempotencyRecord, Long> {
+
+    Optional<IdempotencyRecord> findByKey(String key);
+
     Optional<IdempotencyRecord> findByKeyAndUserId(String key, Long userId);
 }

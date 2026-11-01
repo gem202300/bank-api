@@ -3,52 +3,54 @@ package com.ivan.bankapi.service;
 import com.ivan.bankapi.dto.*;
 import com.ivan.bankapi.exception.BusinessException;
 import com.ivan.bankapi.exception.ResourceNotFoundException;
-import com.ivan.bankapi.model.Account;
-import com.ivan.bankapi.model.Transaction;
-import com.ivan.bankapi.model.User;
+import com.ivan.bankapi.model.*;
 import com.ivan.bankapi.model.enums.AccountStatus;
 import com.ivan.bankapi.model.enums.TransactionType;
-import com.ivan.bankapi.repository.AccountRepository;
-import com.ivan.bankapi.repository.TransactionRepository;
-import com.ivan.bankapi.repository.UserRepository;
+import com.ivan.bankapi.repository.*;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.List;
 import java.util.UUID;
 
 @Service
 public class AccountService {
 
+    private static final BigDecimal DAILY_LIMIT = new BigDecimal("5000.00");
+
     private final AccountRepository accountRepository;
     private final UserRepository userRepository;
     private final TransactionRepository transactionRepository;
+    private final IdempotencyRecordRepository idempotencyRecordRepository;
 
     public AccountService(AccountRepository accountRepository,
                           UserRepository userRepository,
-                          TransactionRepository transactionRepository) {
+                          TransactionRepository transactionRepository,
+                          IdempotencyRecordRepository idempotencyRecordRepository) {
         this.accountRepository = accountRepository;
         this.userRepository = userRepository;
         this.transactionRepository = transactionRepository;
+        this.idempotencyRecordRepository = idempotencyRecordRepository;
     }
 
     @Transactional
     public AccountResponse create(CreateAccountRequest request) {
         User owner = userRepository.findById(request.getOwnerId())
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + request.getOwnerId()));
-
         String currency = request.getCurrency() != null ? request.getCurrency() : "PLN";
         Account account = new Account(generateAccountNumber(), owner, currency);
-        account = accountRepository.save(account);
-        return toResponse(account);
+        return toResponse(accountRepository.save(account));
     }
 
     @Transactional(readOnly = true)
     public List<AccountResponse> findByOwnerId(Long ownerId) {
-        return accountRepository.findByOwnerId(ownerId).stream()
-                .map(this::toResponse)
-                .toList();
+        return accountRepository.findByOwnerId(ownerId).stream().map(this::toResponse).toList();
     }
 
     @Transactional(readOnly = true)
@@ -60,21 +62,12 @@ public class AccountService {
     public AccountResponse deposit(Long accountId, DepositRequest request) {
         Account account = getAccount(accountId);
         requireActive(account);
-
         BigDecimal newBalance = account.getBalance().add(request.getAmount());
         account.setBalance(newBalance);
         accountRepository.save(account);
-
         transactionRepository.save(new Transaction(
-                TransactionType.DEPOSIT,
-                request.getAmount(),
-                account,
-                null,
-                null,
-                request.getDescription(),
-                newBalance
-        ));
-
+                TransactionType.DEPOSIT, request.getAmount(), account, null, null,
+                request.getDescription(), newBalance));
         return toResponse(account);
     }
 
@@ -82,6 +75,7 @@ public class AccountService {
     public AccountResponse withdraw(Long accountId, WithdrawRequest request) {
         Account account = getAccount(accountId);
         requireActive(account);
+        checkDailyLimit(account.getId(), request.getAmount());
 
         if (account.getBalance().compareTo(request.getAmount()) < 0) {
             throw new BusinessException("Insufficient funds");
@@ -90,78 +84,139 @@ public class AccountService {
         BigDecimal newBalance = account.getBalance().subtract(request.getAmount());
         account.setBalance(newBalance);
         accountRepository.save(account);
-
         transactionRepository.save(new Transaction(
-                TransactionType.WITHDRAWAL,
-                request.getAmount(),
-                account,
-                null,
-                null,
-                request.getDescription(),
-                newBalance
-        ));
-
+                TransactionType.WITHDRAWAL, request.getAmount(), account, null, null,
+                request.getDescription(), newBalance));
         return toResponse(account);
     }
 
     @Transactional
-    public TransferResponse transfer(TransferRequest request) {
+    public TransferResponse transfer(TransferRequest request, Long userId, String idempotencyKey) {
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+            var existing = idempotencyRecordRepository.findByKey(idempotencyKey);
+            if (existing.isPresent()) {
+                return rebuildTransferResponse(UUID.fromString(existing.get().getResourceId()));
+            }
+        }
+
         if (request.getFromAccountId().equals(request.getToAccountId())) {
             throw new BusinessException("Cannot transfer to the same account");
         }
 
         Account from = getAccount(request.getFromAccountId());
         Account to = getAccount(request.getToAccountId());
-
         requireActive(from);
         requireActive(to);
 
         if (!from.getCurrency().equals(to.getCurrency())) {
             throw new BusinessException("Currency mismatch");
         }
-
         if (from.getBalance().compareTo(request.getAmount()) < 0) {
             throw new BusinessException("Insufficient funds");
         }
 
+        checkDailyLimit(from.getId(), request.getAmount());
+
         BigDecimal amount = request.getAmount();
         UUID transferGroupId = UUID.randomUUID();
 
-        BigDecimal fromNewBalance = from.getBalance().subtract(amount);
-        from.setBalance(fromNewBalance);
+        BigDecimal fromNew = from.getBalance().subtract(amount);
+        from.setBalance(fromNew);
         accountRepository.save(from);
 
-        BigDecimal toNewBalance = to.getBalance().add(amount);
-        to.setBalance(toNewBalance);
+        BigDecimal toNew = to.getBalance().add(amount);
+        to.setBalance(toNew);
         accountRepository.save(to);
 
         transactionRepository.save(new Transaction(
-                TransactionType.TRANSFER_OUT,
-                amount,
-                from,
-                to,
-                transferGroupId,
-                request.getDescription(),
-                fromNewBalance
-        ));
-
+                TransactionType.TRANSFER_OUT, amount, from, to, transferGroupId,
+                request.getDescription(), fromNew));
         transactionRepository.save(new Transaction(
-                TransactionType.TRANSFER_IN,
-                amount,
-                to,
-                from,
-                transferGroupId,
-                request.getDescription(),
-                toNewBalance
-        ));
+                TransactionType.TRANSFER_IN, amount, to, from, transferGroupId,
+                request.getDescription(), toNew));
+
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+            idempotencyRecordRepository.save(
+                    new IdempotencyRecord(idempotencyKey, userId, transferGroupId.toString()));
+        }
+
+        return new TransferResponse(transferGroupId, from.getId(), to.getId(), amount, fromNew, toNew);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<TransactionResponse> getTransactions(
+            Long accountId,
+            TransactionType type,
+            LocalDateTime from,
+            LocalDateTime to,
+            Pageable pageable
+    ) {
+        getAccount(accountId);
+
+        Page<Transaction> page;
+        if (type != null && from != null && to != null) {
+            page = transactionRepository.findByAccountIdAndTypeAndCreatedAtBetween(
+                    accountId, type, from, to, pageable);
+        } else if (type != null) {
+            page = transactionRepository.findByAccountIdAndType(accountId, type, pageable);
+        } else if (from != null && to != null) {
+            page = transactionRepository.findByAccountIdAndCreatedAtBetween(
+                    accountId, from, to, pageable);
+        } else {
+            page = transactionRepository.findByAccountId(accountId, pageable);
+        }
+
+        return page.map(this::toTxResponse);
+    }
+
+    @Transactional(readOnly = true)
+    public List<TransactionResponse> getByTransferGroupId(UUID transferGroupId) {
+        List<Transaction> list = transactionRepository.findByTransferGroupId(transferGroupId);
+        if (list.isEmpty()) {
+            throw new ResourceNotFoundException("Transfer not found: " + transferGroupId);
+        }
+        return list.stream().map(this::toTxResponse).toList();
+    }
+
+    private void checkDailyLimit(Long accountId, BigDecimal amount) {
+        LocalDate today = LocalDate.now();
+        LocalDateTime start = today.atStartOfDay();
+        LocalDateTime end = today.plusDays(1).atStartOfDay();
+
+        BigDecimal alreadyUsed = transactionRepository.sumOutgoingForDay(
+                accountId,
+                List.of(TransactionType.WITHDRAWAL, TransactionType.TRANSFER_OUT),
+                start,
+                end
+        );
+
+        if (alreadyUsed.add(amount).compareTo(DAILY_LIMIT) > 0) {
+            throw new BusinessException(
+                    "Daily limit exceeded. Limit: " + DAILY_LIMIT + ", already used: " + alreadyUsed);
+        }
+    }
+
+    private TransferResponse rebuildTransferResponse(UUID transferGroupId) {
+        List<Transaction> legs = transactionRepository.findByTransferGroupId(transferGroupId);
+        if (legs.size() < 2) {
+            throw new BusinessException("Incomplete transfer record for idempotency key");
+        }
+        Transaction out = legs.stream()
+                .filter(t -> t.getType() == TransactionType.TRANSFER_OUT)
+                .findFirst()
+                .orElseThrow();
+        Transaction in = legs.stream()
+                .filter(t -> t.getType() == TransactionType.TRANSFER_IN)
+                .findFirst()
+                .orElseThrow();
 
         return new TransferResponse(
                 transferGroupId,
-                from.getId(),
-                to.getId(),
-                amount,
-                fromNewBalance,
-                toNewBalance
+                out.getAccount().getId(),
+                in.getAccount().getId(),
+                out.getAmount(),
+                out.getBalanceAfter(),
+                in.getBalanceAfter()
         );
     }
 
@@ -189,6 +244,20 @@ public class AccountService {
                 account.getCurrency(),
                 account.getStatus(),
                 account.getCreatedAt()
+        );
+    }
+
+    private TransactionResponse toTxResponse(Transaction t) {
+        return new TransactionResponse(
+                t.getId(),
+                t.getType(),
+                t.getAmount(),
+                t.getAccount().getId(),
+                t.getRelatedAccount() != null ? t.getRelatedAccount().getId() : null,
+                t.getTransferGroupId(),
+                t.getDescription(),
+                t.getBalanceAfter(),
+                t.getCreatedAt()
         );
     }
 }

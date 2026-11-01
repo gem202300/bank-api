@@ -20,6 +20,20 @@ public class TransactionResponse {
     public TransactionResponse() {
     }
 
+    public TransactionResponse(Long id, TransactionType type, BigDecimal amount, Long accountId,
+                               Long relatedAccountId, UUID transferGroupId, String description,
+                               BigDecimal balanceAfter, LocalDateTime createdAt) {
+        this.id = id;
+        this.type = type;
+        this.amount = amount;
+        this.accountId = accountId;
+        this.relatedAccountId = relatedAccountId;
+        this.transferGroupId = transferGroupId;
+        this.description = description;
+        this.balanceAfter = balanceAfter;
+        this.createdAt = createdAt;
+    }
+
     public Long getId() {
         return id;
     }
