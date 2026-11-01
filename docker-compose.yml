@@ -1,0 +1,27 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: bankapi
+      POSTGRES_USER: bankapi
+      POSTGRES_PASSWORD: bankapi
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/bankapi
+      SPRING_DATASOURCE_USERNAME: bankapi
+      SPRING_DATASOURCE_PASSWORD: bankapi
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      SPRING_JPA_OPEN_IN_VIEW: "false"
+    depends_on:
+      - db
+
+volumes:
+  pgdata:
