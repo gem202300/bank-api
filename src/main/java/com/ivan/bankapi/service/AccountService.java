@@ -49,6 +49,44 @@ public class AccountService {
     }
 
     @Transactional(readOnly = true)
+    public StatementResponse getStatement(Long accountId, LocalDateTime from, LocalDateTime to) {
+        Account account = getAccount(accountId);
+
+        LocalDateTime fromDate = from != null ? from : LocalDateTime.of(1970, 1, 1, 0, 0);
+        LocalDateTime toDate = to != null ? to : LocalDateTime.now();
+
+        List<Transaction> txs = transactionRepository
+                .findByAccountIdAndCreatedAtBetween(
+                        accountId, fromDate, toDate,
+                        org.springframework.data.domain.Pageable.unpaged()
+                )
+                .getContent();
+
+        BigDecimal totalIn = BigDecimal.ZERO;
+        BigDecimal totalOut = BigDecimal.ZERO;
+
+        for (Transaction t : txs) {
+            switch (t.getType()) {
+                case DEPOSIT, TRANSFER_IN -> totalIn = totalIn.add(t.getAmount());
+                case WITHDRAWAL, TRANSFER_OUT -> totalOut = totalOut.add(t.getAmount());
+            }
+        }
+
+        List<TransactionResponse> items = txs.stream().map(this::toTxResponse).toList();
+
+        return new StatementResponse(
+                account.getId(),
+                account.getAccountNumber(),
+                fromDate,
+                toDate,
+                account.getBalance(),
+                totalIn,
+                totalOut,
+                items
+        );
+    }
+
+    @Transactional(readOnly = true)
     public List<AccountResponse> findByOwnerId(Long ownerId) {
         return accountRepository.findByOwnerId(ownerId).stream().map(this::toResponse).toList();
     }

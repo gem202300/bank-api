@@ -41,6 +41,15 @@ public class AccountController {
         return accountService.findById(id);
     }
 
+    @GetMapping("/{id}/statement")
+    public StatementResponse statement(
+            @PathVariable Long id,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime to
+    ) {
+        return accountService.getStatement(id, from, to);
+    }
+
     @PostMapping("/{id}/deposit")
     public AccountResponse deposit(@PathVariable Long id, @Valid @RequestBody DepositRequest request) {
         return accountService.deposit(id, request);
